@@ -24,7 +24,10 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
   <key>LSUIElement</key><true/>
 </dict></plist>
 EOF
-codesign --force --sign - "$APP"
+# A stable signing identity keeps the Accessibility approval valid across rebuilds
+# (ad hoc signatures change every build). Override with SIGN_ID, falls back to ad hoc.
+SIGN_ID="${SIGN_ID:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -1)}"
+codesign --force --sign "${SIGN_ID:--}" "$APP"
 rm -rf "$SRC/$APP"; ditto --noextattr --norsrc "$APP" "$SRC/$APP"
 echo "Built $APP"
 
@@ -43,6 +46,7 @@ if [[ "${1:-}" == "--install" ]]; then
   <key>ProgramArguments</key><array><string>$DEST/$APP/Contents/MacOS/DeleteKey</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
+  <key>StandardErrorPath</key><string>$HOME/Library/Logs/DeleteKey.log</string>
 </dict></plist>
 EOF
   launchctl load "$PLIST"

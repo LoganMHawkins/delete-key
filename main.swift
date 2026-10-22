@@ -4,6 +4,10 @@ import ApplicationServices
 // Makes a bare Delete (backspace) keypress behave like ⌘Delete in Finder
 // and on the Desktop, unless a text field is being edited (rename, search).
 
+func log(_ m: String) { fputs("DeleteKey: \(m)\n", stderr) }
+// Verbose per-keypress logging: `touch ~/Library/Logs/DeleteKey.debug` to enable, remove to disable.
+var debug: Bool { FileManager.default.fileExists(atPath: NSHomeDirectory() + "/Library/Logs/DeleteKey.debug") }
+
 let finderBundleID = "com.apple.finder"
 let deleteKeyCode: Int64 = 51
 let forwardDeleteKeyCode: Int64 = 117
@@ -20,6 +24,7 @@ func isEditingText(pid: pid_t) -> Bool {
     let app = AXUIElementCreateApplication(pid)
     var focused: CFTypeRef?
     let err = AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused)
+    if debug { log("focus query err=\(err.rawValue)") }
     if err == .noValue { return false }          // nothing focused (e.g. bare Desktop)
     guard err == .success, let element = focused else { return true }
     let el = element as! AXUIElement
@@ -27,9 +32,8 @@ func isEditingText(pid: pid_t) -> Bool {
     AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &role)
     if let r = role as? String,
        r == kAXTextFieldRole || r == kAXTextAreaRole || r == kAXComboBoxRole { return true }
-    // Any other element that exposes a text selection is an editable text control.
-    var range: CFTypeRef?
-    return AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &range) == .success
+    if debug { log("focused role=\((role as? String) ?? "nil")") }
+    return false
 }
 
 var tap: CFMachPort?
@@ -48,7 +52,8 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
     let code = event.getIntegerValueField(.keyboardEventKeycode)
     switch code {
     case deleteKeyCode, forwardDeleteKeyCode:
-        if isEditingText(pid: front.processIdentifier) { break }
+        if isEditingText(pid: front.processIdentifier) { if debug { log("delete skipped: editing text") }; break }
+        if debug { log("delete -> trash") }
         event.setIntegerValueField(.keyboardEventKeycode, value: deleteKeyCode)
         event.flags.insert(.maskCommand)            // ⌘Delete = Move to Trash
     case returnKeyCode, enterKeyCode:
@@ -61,10 +66,15 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
     return Unmanaged.passUnretained(event)
 }
 
+log("starting, trusted=\(AXIsProcessTrusted())")
+
 let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
 if !AXIsProcessTrustedWithOptions(options) {
-    // Prompt shown; poll until the user grants Accessibility access.
+    // Prompt shown; poll until the user grants Accessibility access, then relaunch:
+    // the trust answer is cached per process, so launchd (KeepAlive) restarts us fresh.
     while !AXIsProcessTrusted() { Thread.sleep(forTimeInterval: 2) }
+    log("access granted, relaunching")
+    exit(0)
 }
 
 guard let created = CGEvent.tapCreate(
@@ -79,6 +89,7 @@ guard let created = CGEvent.tapCreate(
     exit(1)
 }
 tap = created
+log("event tap created, running")
 
 let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, created, 0)
 CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
