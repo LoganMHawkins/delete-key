@@ -14,15 +14,22 @@ let oKeyCode: Int64 = 31
 let openWithReturn = CommandLine.arguments.contains("--open-with-return")
 let modifierMask: CGEventFlags = [.maskCommand, .maskShift, .maskAlternate, .maskControl]
 
-func isEditingText() -> Bool {
-    let system = AXUIElementCreateSystemWide()
+// Asks Finder itself for its focused element: the system-wide query fails for Finder.
+// Fails safe: if the answer is unclear, treat it as editing so the key passes through.
+func isEditingText(pid: pid_t) -> Bool {
+    let app = AXUIElementCreateApplication(pid)
     var focused: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
-          let element = focused else { return false }
+    let err = AXUIElementCopyAttributeValue(app, kAXFocusedUIElementAttribute as CFString, &focused)
+    if err == .noValue { return false }          // nothing focused (e.g. bare Desktop)
+    guard err == .success, let element = focused else { return true }
+    let el = element as! AXUIElement
     var role: CFTypeRef?
-    AXUIElementCopyAttributeValue(element as! AXUIElement, kAXRoleAttribute as CFString, &role)
-    guard let r = role as? String else { return false }
-    return r == kAXTextFieldRole || r == kAXTextAreaRole || r == kAXComboBoxRole
+    AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &role)
+    if let r = role as? String,
+       r == kAXTextFieldRole || r == kAXTextAreaRole || r == kAXComboBoxRole { return true }
+    // Any other element that exposes a text selection is an editable text control.
+    var range: CFTypeRef?
+    return AXUIElementCopyAttributeValue(el, kAXSelectedTextRangeAttribute as CFString, &range) == .success
 }
 
 var tap: CFMachPort?
@@ -34,17 +41,18 @@ let callback: CGEventTapCallBack = { _, type, event, _ in
     }
     guard type == .keyDown,
           event.flags.intersection(modifierMask).isEmpty,
-          NSWorkspace.shared.frontmostApplication?.bundleIdentifier == finderBundleID
+          let front = NSWorkspace.shared.frontmostApplication,
+          front.bundleIdentifier == finderBundleID
     else { return Unmanaged.passUnretained(event) }
 
     let code = event.getIntegerValueField(.keyboardEventKeycode)
     switch code {
     case deleteKeyCode, forwardDeleteKeyCode:
-        if isEditingText() { break }
+        if isEditingText(pid: front.processIdentifier) { break }
         event.setIntegerValueField(.keyboardEventKeycode, value: deleteKeyCode)
         event.flags.insert(.maskCommand)            // ⌘Delete = Move to Trash
     case returnKeyCode, enterKeyCode:
-        if !openWithReturn || isEditingText() { break }
+        if !openWithReturn || isEditingText(pid: front.processIdentifier) { break }
         event.setIntegerValueField(.keyboardEventKeycode, value: oKeyCode)
         event.flags.insert(.maskCommand)            // ⌘O = Open
     default:

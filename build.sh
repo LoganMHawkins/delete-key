@@ -4,10 +4,14 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+SRC="$PWD"
+# Build and sign in a temp dir: folders like ~/Documents add attributes that codesign rejects.
+BUILD="$(mktemp -d)"
+trap 'rm -rf "$BUILD"' EXIT
 APP="DeleteKey.app"
-rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
-swiftc -O main.swift -o "$APP/Contents/MacOS/DeleteKey"
+mkdir -p "$BUILD/$APP/Contents/MacOS"
+swiftc -O main.swift -o "$BUILD/$APP/Contents/MacOS/DeleteKey"
+cd "$BUILD"
 
 cat > "$APP/Contents/Info.plist" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -21,6 +25,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
 </dict></plist>
 EOF
 codesign --force --sign - "$APP"
+rm -rf "$SRC/$APP"; ditto --noextattr --norsrc "$APP" "$SRC/$APP"
 echo "Built $APP"
 
 if [[ "${1:-}" == "--install" ]]; then
